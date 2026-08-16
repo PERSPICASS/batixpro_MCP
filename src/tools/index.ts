@@ -4,16 +4,26 @@ import { registerProductTools } from "./product.js";
 import { registerCustomerTools } from "./customer.js";
 import { registerSalesTools } from "./sales.js";
 import { registerStockTools } from "./stock.js";
+import { registerAnalyticsTools } from "./analytics.js";
+import { registerQuoteTools } from "./quote.js";
+import { registerInvoiceTools } from "./invoice.js";
 
 /**
  * Enregistre l'ensemble des tools disponibles pour une session.
- * Phase 1 : lecture des domaines produit / client / vente / stock (endpoints v1 existants).
- * Les tools d'écriture (avec confirmation humaine) et les domaines restants
- * viendront en Phase 2.
+ *
+ * Lecture : produit / client / vente / stock / analytics, et depuis l'ouverture des
+ * modules documentaires, devis et facture.
+ *
+ * Écriture : la création d'un devis et celle d'une facture, toutes deux bornées au
+ * BROUILLON par les contrôleurs v1 (voir defineWrite dans registry.ts). L'émission,
+ * l'encaissement et l'annulation restent hors de portée d'un assistant.
  */
 export function registerAllTools(server: McpServer, ctx: Ctx): void {
   registerProductTools(server, ctx);
   registerCustomerTools(server, ctx);
   registerSalesTools(server, ctx);
   registerStockTools(server, ctx);
+  registerAnalyticsTools(server, ctx);
+  registerQuoteTools(server, ctx);
+  registerInvoiceTools(server, ctx);
 }

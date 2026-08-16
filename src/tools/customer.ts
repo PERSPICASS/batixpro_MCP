@@ -10,7 +10,9 @@ export function registerCustomerTools(server: McpServer, ctx: Ctx): void {
     name: "customer_search",
     title: "Rechercher des clients",
     description:
-      "Recherche des clients par nom, téléphone ou e-mail. À utiliser pour retrouver un "
+      "Recherche des clients par nom, téléphone ou e-mail. La casse et les accents sont "
+      + "ignorés, et un numéro est retrouvé quelle que soit sa mise en forme "
+      + "(« +2250987654322 » trouve « +225 09 87 65 43 22 »). À utiliser pour retrouver un "
       + "client avant une vente, un devis ou la consultation de son historique. Lecture seule.",
     inputSchema: {
       search: z.string().optional().describe("Terme recherché (nom, téléphone ou e-mail)."),
@@ -33,7 +35,11 @@ export function registerCustomerTools(server: McpServer, ctx: Ctx): void {
     description: "Récupère la fiche complète d'un client par son identifiant. Lecture seule.",
     inputSchema: {
       customer_id: z.number().int().positive().describe("Identifiant du client."),
+      shop_id: shopId,
     },
-    run: (args, laravel) => laravel.get(`/customers/${args.customer_id as number}`),
+    // shop_id doit être DÉCLARÉ pour être transmis : zod retire tout argument absent du
+    // schéma, si bien que le cloisonnement imposé par l'application se perdait ici en
+    // silence. Sans lui, Laravel autorise la lecture dans toute boutique du compte.
+    run: (args, laravel) => laravel.get(`/customers/${args.customer_id as number}`, { shop_id: args.shop_id }),
   });
 }

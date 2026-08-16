@@ -10,9 +10,13 @@ export function registerProductTools(server: McpServer, ctx: Ctx): void {
     name: "product_search",
     title: "Rechercher des produits",
     description:
-      "Recherche des produits du catalogue par nom ou référence (SKU). À utiliser pour "
-      + "trouver un article et consulter son prix ou son stock avant une vente ou un devis. "
-      + "Lecture seule, ne modifie rien.",
+      "Recherche des produits du catalogue par nom, MARQUE ou référence (SKU). À utiliser "
+      + "pour trouver un article et consulter son prix ou son stock avant une vente ou un "
+      + "devis. Les mots sont cherchés séparément et la casse comme les accents sont "
+      + "ignorés : « pistolet 600w tolsen » retrouve « Pistolet à peinture électrique 600W » "
+      + "de marque Tolsen. Donne des mots-clés distinctifs, jamais une phrase entière — "
+      + "« de », « chez » ou « avec » ne correspondent à rien et feraient échouer la "
+      + "recherche. Lecture seule, ne modifie rien.",
     inputSchema: {
       search: z.string().optional().describe("Terme recherché (nom ou SKU)."),
       is_active: z.boolean().optional().describe("Filtrer sur les produits actifs."),
@@ -36,7 +40,11 @@ export function registerProductTools(server: McpServer, ctx: Ctx): void {
       + "stock, catégorie). Lecture seule.",
     inputSchema: {
       product_id: z.number().int().positive().describe("Identifiant du produit."),
+      shop_id: shopId,
     },
-    run: (args, laravel) => laravel.get(`/products/${args.product_id as number}`),
+    // shop_id doit être DÉCLARÉ pour être transmis : zod retire tout argument absent du
+    // schéma, si bien que le cloisonnement imposé par l'application se perdait ici en
+    // silence. Sans lui, Laravel autorise la lecture dans toute boutique du compte.
+    run: (args, laravel) => laravel.get(`/products/${args.product_id as number}`, { shop_id: args.shop_id }),
   });
 }

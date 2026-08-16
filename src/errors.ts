@@ -61,9 +61,36 @@ function codeForStatus(status: number): string {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Détail des champs refusés par la validation Laravel (`{errors: {champ: [msg]}}`).
+ *
+ * Remonté au modèle pour les 422 UNIQUEMENT : depuis l'ouverture des tools d'écriture,
+ * un « Données invalides. » nu laissait le modèle réessayer à l'aveugle. Ce que la
+ * validation rejette est ce que le modèle vient lui-même d'envoyer — aucune donnée
+ * d'un autre tenant ne transite par là.
+ */
+function validationFields(details: unknown): Record<string, string[]> | undefined {
+  if (!isRecord(details) || !isRecord(details.errors)) return undefined;
+
+  const fields: Record<string, string[]> = {};
+  for (const [field, messages] of Object.entries(details.errors)) {
+    if (Array.isArray(messages)) {
+      fields[field] = messages.filter((m): m is string => typeof m === "string");
+    }
+  }
+
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
 /** Construit un résultat de tool en erreur, lisible par le modèle. */
 export function toolError(error: unknown): CallToolResult {
   if (error instanceof LaravelError) {
+    const fields = error.status === 422 ? validationFields(error.details) : undefined;
+
     return {
       isError: true,
       content: [
@@ -73,6 +100,7 @@ export function toolError(error: unknown): CallToolResult {
             error: {
               code: error.code || codeForStatus(error.status),
               message: messageForStatus(error.status, error.message),
+              ...(fields ? { fields } : {}),
             },
           }),
         },

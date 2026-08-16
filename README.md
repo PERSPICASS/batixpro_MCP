@@ -8,26 +8,43 @@ des *tools* MCP en appels HTTP authentifiés vers Laravel, en transférant le to
 Sanctum du client **verbatim**. Toute la sécurité (tenant, permissions, écritures) vit
 côté Laravel. Voir `docs/` pour l'architecture complète (passes 1 à 4).
 
-## État — Phase 1 (socle en lecture)
+## État — socle en lecture + documents en brouillon
 
-Tools disponibles (lecture seule, endpoints v1 déjà existants) :
+Tools de **lecture** (aucun effet de bord) :
 
 | Tool | Endpoint Laravel |
 |---|---|
 | `product_search`, `product_get` | `GET /products`, `/products/{id}` |
 | `customer_search`, `customer_get` | `GET /customers`, `/customers/{id}` |
 | `sales_list`, `sales_get` | `GET /sales`, `/sales/{id}` |
-| `stock_movements` | `GET /stock-movements` |
+| `sales_summary`, `top_products` | `GET /analytics/sales-summary`, `/analytics/top-products` |
+| `stock_movements`, `stock_alerts` | `GET /stock-movements`, `/alerts` |
+| `quote_search`, `quote_get` | `GET /quotes`, `/quotes/{id}` |
+| `invoice_search`, `invoice_get` | `GET /invoices`, `/invoices/{id}` |
 
-À venir (Phase 2) : tokens MCP par utilisateur, écritures avec confirmation humaine,
-domaines devis / factures / achats / finance / analytics / entreprise.
+Tools d'**écriture** (`defineWrite`) :
+
+| Tool | Endpoint Laravel | Garde |
+|---|---|---|
+| `quote_create` | `POST /quotes` | Devis créé en `draft`, jamais envoyé |
+| `invoice_create` | `POST /invoices` | Facture créée en `draft`, jamais émise |
+
+La garde n'est pas dans la passerelle : les contrôleurs v1 **forcent** le statut
+brouillon et ignorent tout statut envoyé par l'appelant. Un brouillon ne déstocke pas,
+ne part pas au client et se supprime dans l'application — c'est ce qui rend l'écriture
+acceptable sans dialogue de confirmation dans le transport. Émettre, encaisser et
+annuler restent des gestes humains, sans tool correspondant.
+
+À venir : tokens MCP par utilisateur, domaines achats / finance / entreprise.
 
 ## Prérequis
 
 - Node.js ≥ 20
 - L'API `batix_saas` accessible (variable `LARAVEL_API_URL`)
-- Un token Sanctum valide (abilities `products:read`, `customers:read`, `sales:read`,
-  `stock-movements:read`) — créé depuis BATIXPRO (Settings → API Tokens).
+- Un token Sanctum valide — créé depuis BATIXPRO (Settings → API Tokens). Abilities
+  selon les tools voulus : `products:read`, `customers:read`, `sales:read`,
+  `stock-movements:read`, `quotes:read`, `invoices:read`, et pour la création de
+  brouillons `quotes:write`, `invoices:write`.
 
 ## Installation
 
