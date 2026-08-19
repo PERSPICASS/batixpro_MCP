@@ -19,8 +19,8 @@ Tools de **lecture** (aucun effet de bord) :
 | `sales_list`, `sales_get` | `GET /sales`, `/sales/{id}` |
 | `sales_summary`, `top_products` | `GET /analytics/sales-summary`, `/analytics/top-products` |
 | `stock_movements`, `stock_alerts` | `GET /stock-movements`, `/alerts` |
-| `quote_search`, `quote_get` | `GET /quotes`, `/quotes/{id}` |
-| `invoice_search`, `invoice_get` | `GET /invoices`, `/invoices/{id}` |
+| `quote_search`, `quote_get`, `quote_download_link` | `GET /quotes`, `/quotes/{id}`, `/quotes/{id}/download-link` |
+| `invoice_search`, `invoice_get`, `invoice_download_link` | `GET /invoices`, `/invoices/{id}`, `/invoices/{id}/download-link` |
 
 
 Tools d'**écriture** (`defineWrite`) :
@@ -35,6 +35,10 @@ brouillon et ignorent tout statut envoyé par l'appelant. Un brouillon ne désto
 ne part pas au client et se supprime dans l'application — c'est ce qui rend l'écriture
 acceptable sans dialogue de confirmation dans le transport. Émettre, encaisser et
 annuler restent des gestes humains, sans tool correspondant.
+
+Les tools `quote_download_link` et `invoice_download_link` génèrent un lien public signé
+vers le PDF du document. Le lien est créé uniquement à la demande, expire après 15
+minutes et ne contient jamais le token Sanctum.
 
 À venir : tokens MCP par utilisateur, domaines achats / finance / entreprise.
 

@@ -55,6 +55,23 @@ export function registerQuoteTools(server: McpServer, ctx: Ctx): void {
     run: (args, laravel) => laravel.get(`/quotes/${args.quote_id as number}`, { shop_id: args.shop_id }),
   });
 
+  defineRead(server, ctx, {
+    name: "quote_download_link",
+    title: "Télécharger un devis en PDF",
+    description:
+      "Génère à la demande un lien public signé vers le PDF d'un devis. Le lien expire "
+      + "après 15 minutes et ne contient jamais le token d'API. Utilise l'identifiant "
+      + "renvoyé par quote_create, quote_search ou quote_get ; ne le devine jamais. "
+      + "Ne partage le lien qu'avec le destinataire demandé par l'utilisateur. Lecture seule.",
+    inputSchema: {
+      quote_id: z.number().int().positive()
+        .describe("Identifiant du devis, obtenu via un autre tool devis — jamais deviné."),
+      shop_id: shopId,
+    },
+    run: (args, laravel) =>
+      laravel.get(`/quotes/${args.quote_id as number}/download-link`, { shop_id: args.shop_id }),
+  });
+
   defineWrite(server, ctx, {
     name: "quote_update",
     title: "Modifier un devis (brouillon)",
@@ -99,6 +116,7 @@ export function registerQuoteTools(server: McpServer, ctx: Ctx): void {
       + "au client : l'utilisateur le relit puis l'envoie depuis l'application. "
       + "Les totaux et la TVA sont calculés par le serveur à partir du taux de chaque "
       + "produit — ne les fournis pas et ne les annonce pas avant la réponse. "
+      + "Après création, quote_download_link peut fournir le PDF si l'utilisateur le demande. "
       + "Récapitule toujours la commande à l'utilisateur et obtiens son accord avant "
       + "d'appeler ce tool.",
     inputSchema: {

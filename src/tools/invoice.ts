@@ -58,6 +58,23 @@ export function registerInvoiceTools(server: McpServer, ctx: Ctx): void {
     run: (args, laravel) => laravel.get(`/invoices/${args.invoice_id as number}`, { shop_id: args.shop_id }),
   });
 
+  defineRead(server, ctx, {
+    name: "invoice_download_link",
+    title: "Télécharger une facture en PDF",
+    description:
+      "Génère à la demande un lien public signé vers le PDF d'une facture. Le lien expire "
+      + "après 15 minutes et ne contient jamais le token d'API. Utilise l'identifiant "
+      + "renvoyé par invoice_create, invoice_search ou invoice_get ; ne le devine jamais. "
+      + "Ne partage le lien qu'avec le destinataire demandé par l'utilisateur. Lecture seule.",
+    inputSchema: {
+      invoice_id: z.number().int().positive()
+        .describe("Identifiant de la facture, obtenu via un autre tool facture — jamais deviné."),
+      shop_id: shopId,
+    },
+    run: (args, laravel) =>
+      laravel.get(`/invoices/${args.invoice_id as number}/download-link`, { shop_id: args.shop_id }),
+  });
+
   defineWrite(server, ctx, {
     name: "invoice_update",
     title: "Modifier une facture (brouillon)",
@@ -106,7 +123,8 @@ export function registerInvoiceTools(server: McpServer, ctx: Ctx): void {
       + "et c'est l'utilisateur qui l'émet depuis l'application. Tu ne peux PAS émettre, "
       + "envoyer, encaisser ni annuler une facture. "
       + "Les totaux et la TVA sont calculés par le serveur — ne les annonce pas avant la "
-      + "réponse. Récapitule toujours la facture à l'utilisateur et obtiens son accord "
+      + "réponse. Après création, invoice_download_link peut fournir le PDF si l'utilisateur "
+      + "le demande. Récapitule toujours la facture à l'utilisateur et obtiens son accord "
       + "avant d'appeler ce tool.",
     inputSchema: {
       customer_id: z.number().int().positive()
