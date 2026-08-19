@@ -22,6 +22,7 @@ Tools de **lecture** (aucun effet de bord) :
 | `quote_search`, `quote_get` | `GET /quotes`, `/quotes/{id}` |
 | `invoice_search`, `invoice_get` | `GET /invoices`, `/invoices/{id}` |
 
+
 Tools d'**écriture** (`defineWrite`) :
 
 | Tool | Endpoint Laravel | Garde |
@@ -60,7 +61,72 @@ npm run build && npm start      # production
 npm run dev                     # développement (rechargement à chaud)
 ```
 
+### Avec Docker
+
+Par défaut, le conteneur contacte Laravel sur le port `8000` de la machine hôte et
+publie le serveur MCP uniquement sur `http://127.0.0.1:3000` :
+
+```bash
+docker compose up --build -d
+docker compose ps
+curl http://localhost:3000/health
+```
+
+Si Laravel utilise une autre URL, surchargez-la avec `DOCKER_LARAVEL_API_URL`. Le nom
+`app` ci-dessous suppose que les deux services ont été placés sur le même réseau Docker :
+
+```bash
+DOCKER_LARAVEL_API_URL=http://app/api/v1 docker compose up --build -d
+```
+
+Le port publié peut être changé sans modifier le port interne du conteneur :
+
+```bash
+MCP_PORT=3111 docker compose up --build -d
+```
+
+#### Déploiement sur le VPS Batix
+
+Sur le VPS, Laravel est déjà joignable sous `batix_prod_nginx` via le réseau Docker
+externe `web`. Utilisez la surcharge dédiée :
+
+```bash
+docker network inspect web
+docker compose -f compose.yaml -f compose.vps.yaml up --build -d
+docker compose -f compose.yaml -f compose.vps.yaml ps
+curl http://127.0.0.1:3000/health
+```
+
+Le port reste lié à la boucle locale du VPS. Toute exposition publique doit passer par
+le reverse proxy HTTPS ; `MCP_BIND_ADDRESS=0.0.0.0` permet explicitement une exposition
+directe, mais n'est pas la valeur recommandée.
+
+Lorsque le MCP est déployé avec la stack `agent_auto_heberge`, utilisez plutôt son
+`compose.vps.yml` et son script `scripts/deploy-vps.sh` : cette stack ne publie aucun
+port, relie directement Hermes au MCP et relie uniquement le MCP au réseau `web`.
+
+Le workflow GitHub Actions `.github/workflows/deploy.yml` automatise ce chemin à chaque
+push sur `main` (ou manuellement avec `workflow_dispatch`). Il attend les réglages
+suivants dans le dépôt GitHub :
+
+- variables `VPS_HOST` et `VPS_USER` ;
+- secret `VPS_SSH_KEY` ;
+- dépôts VPS présents dans `/opt/batix/apps/prod/batixpro_mcp` et
+  `/opt/batix/apps/prod/agent_auto_heberge`.
+
+Avant la bascule, le workflow exécute le typecheck, le build TypeScript et un build
+Docker. Sur le VPS, il ne recrée que `batix-mcp`, attend son healthcheck puis vérifie
+explicitement que l'API Laravel est joignable.
+
+Pour suivre les logs et arrêter le service :
+
+```bash
+docker compose logs -f mcp
+docker compose down
+```
+
 Endpoints :
+
 - `POST /mcp` — endpoint MCP (Streamable HTTP). Requiert `Authorization: Bearer <token>`.
 - `GET /health` — santé du process + joignabilité de l'API Laravel.
 

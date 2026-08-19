@@ -1,0 +1,22 @@
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: batixpro-mcp:local
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      LARAVEL_API_URL: "${DOCKER_LARAVEL_API_URL:-http://host.docker.internal:8000/api/v1}"
+      PORT: "3000"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      LARAVEL_TIMEOUT_MS: "${LARAVEL_TIMEOUT_MS:-15000}"
+    ports:
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-3000}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

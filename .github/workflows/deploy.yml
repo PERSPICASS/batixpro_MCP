@@ -1,0 +1,89 @@
+name: Deploy PROD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: batixpro-mcp-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Build production image
+        run: docker build --progress=plain --tag batixpro-mcp:ci .
+
+  deploy:
+    needs: verify
+    if: ${{ vars.VPS_HOST != '' && vars.VPS_USER != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.VPS_HOST }}
+          username: ${{ vars.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 15m
+          script: |
+            set -eu
+
+            MCP_DIR=/opt/batix/apps/prod/batixpro_mcp
+            AGENT_DIR=/opt/batix/apps/prod/agent_auto_heberge
+
+            test -d "$MCP_DIR/.git"
+            test -f "$AGENT_DIR/compose.vps.yml"
+            test -f "$AGENT_DIR/deploy/.env"
+
+            echo "=== 1. Mise à jour du dépôt MCP ==="
+            cd "$MCP_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "=== 2. Validation de la stack VPS ==="
+            cd "$AGENT_DIR"
+            docker compose --env-file deploy/.env -f compose.vps.yml config --quiet
+
+            echo "=== 3. Construction du MCP ==="
+            docker compose --env-file deploy/.env -f compose.vps.yml build --pull batix-mcp
+
+            echo "=== 4. Bascule du MCP ==="
+            docker compose --env-file deploy/.env -f compose.vps.yml \
+              up -d --no-deps --force-recreate --wait batix-mcp
+
+            echo "=== 5. Vérification de santé ==="
+            docker compose --env-file deploy/.env -f compose.vps.yml exec -T batix-mcp \
+              node -e "fetch('http://127.0.0.1:3000/health').then(async (response) => { const body = await response.json(); console.log(JSON.stringify(body)); if (!response.ok || body.status !== 'ok' || body.laravel_reachable !== true) process.exit(1); }).catch((error) => { console.error(error); process.exit(1); });"
+            docker compose --env-file deploy/.env -f compose.vps.yml ps batix-mcp
+
+            echo "=== Deploy SUCCESS ==="
