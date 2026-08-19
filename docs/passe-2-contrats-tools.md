@@ -172,12 +172,21 @@
 - **Erreurs** : `forbidden`.
 
 ### `stock_alerts` — read
-- **Description** : Liste des produits en rupture ou sous le seuil d'alerte, pour
-  anticiper les commandes. Ne modifie rien.
-- **Input** : `{ shop_id?: number }`
-- **Output** : `[{ product_id, name, sku, stock_quantity, min_stock_alert }]`
-- **Endpoint** : ⚠️ à créer — `GET /api/v1/stock/alerts` (ability `stock-movements:read`)
+- **Description** : Liste des alertes actives non lues (stock, crédits, précommandes).
+- **Input** : `{ shop_id?: number, per_page?: number }`
+- **Output** : alertes actives ; ce n'est pas l'état exhaustif du stock.
+- **Endpoint** : `GET /api/v1/alerts` ✅
 - **Permission** : `stock-movements:read` + `stocks` / view
+- **Erreurs** : `forbidden`.
+
+### `stock_low_products` — read
+- **Description** : Liste paginée exhaustive des produits actifs dont le stock courant
+  est inférieur ou égal au seuil strictement positif configuré.
+- **Input** : `{ shop_id?: number, page?: number, per_page?: number }`
+- **Output** : collection paginée de produits ; `meta.total` est le compteur exact.
+- **Endpoint** : `GET /api/v1/stock/low-products` ✅
+- **Permission** : `stock-movements:read` + `stocks` / view
+- **Règles** : boutiques accessibles ; produits actifs ; suivi de stock actif ; seuil > 0.
 - **Erreurs** : `forbidden`.
 
 ### `stock_adjust` — write (**engagement stock → confirmation humaine requise**)

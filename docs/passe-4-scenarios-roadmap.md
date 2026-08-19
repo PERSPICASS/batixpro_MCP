@@ -37,7 +37,7 @@
 ### ③ « Qu'est-ce qui va bientôt manquer en stock ? »
 - **Rôle** : manager · **Agent** : Stock
 - **Tools** :
-  1. `stock_alerts({ shop_id: 3 })` → 4 produits sous le seuil
+  1. `stock_low_products({ shop_id: 3 })` → 4 produits sous le seuil
   2. `supplier_search({ search: "" })` → fournisseurs liés à la boutique
 - **Réponse** : « 4 produits sous le seuil : Tôle bac (3 restants / seuil 20), Clous
   90mm (rupture), … Veux-tu que je prépare une commande fournisseur ? (elle te sera

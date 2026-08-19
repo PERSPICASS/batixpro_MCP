@@ -7,6 +7,30 @@ const shopId = z.number().int().positive().optional()
 
 export function registerStockTools(server: McpServer, ctx: Ctx): void {
   defineRead(server, ctx, {
+    name: "stock_low_products",
+    title: "Lister les produits en stock bas",
+    description:
+      "Liste exhaustive et paginée de l'ÉTAT ACTUEL des produits actifs dont le stock "
+      + "est inférieur ou égal à leur seuil d'alerte. Contrairement à stock_alerts, ce "
+      + "tool ne dépend pas des notifications lues ou non lues : meta.total donne le "
+      + "nombre exact de produits concernés. Pour restituer toute la liste, parcours les "
+      + "pages de 1 à meta.last_page sans demander à l'utilisateur de fournir un export. "
+      + "Lecture seule.",
+    inputSchema: {
+      shop_id: shopId,
+      page: z.number().int().min(1).optional().describe("Page à lire (défaut : 1)."),
+      per_page: z.number().int().min(1).max(100).optional()
+        .describe("Produits par page (défaut et maximum : 100)."),
+    },
+    run: (args, laravel) =>
+      laravel.get("/stock/low-products", {
+        shop_id: args.shop_id,
+        page: args.page,
+        per_page: args.per_page,
+      }),
+  });
+
+  defineRead(server, ctx, {
     name: "stock_movements",
     title: "Lister les mouvements de stock",
     description:

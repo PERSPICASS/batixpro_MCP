@@ -51,7 +51,10 @@ export function registerAnalyticsTools(server: McpServer, ctx: Ctx): void {
     title: "Alertes actives",
     description:
       "Liste les alertes non lues d'une boutique (ruptures de stock, crédits en retard, "
-      + "précommandes prêtes…). À utiliser pour signaler ce qui requiert une action. Lecture seule.",
+      + "précommandes prêtes…). Ce n'est PAS l'historique ni la liste exhaustive des "
+      + "produits actuellement sous leur seuil : utilise stock_low_products pour cette "
+      + "question. À utiliser pour signaler les notifications qui requièrent une action. "
+      + "Lecture seule.",
     inputSchema: {
       shop_id: shopId,
       per_page: z.number().int().min(1).max(100).optional().describe("Nombre d'alertes (max 100)."),
