@@ -58,32 +58,61 @@ jobs:
           script: |
             set -eu
 
-            MCP_DIR=/opt/batix/apps/prod/batixpro_mcp
-            AGENT_DIR=/opt/batix/apps/prod/agent_auto_heberge
+            MCP_DIR=/opt/batix/apps/prod/batixpro_MCP
+            C="docker compose -f compose.yaml -f compose.vps.yaml"
 
             test -d "$MCP_DIR/.git"
-            test -f "$AGENT_DIR/compose.vps.yml"
-            test -f "$AGENT_DIR/deploy/.env"
-
-            echo "=== 1. Mise à jour du dépôt MCP ==="
+            test -f "$MCP_DIR/.env"
             cd "$MCP_DIR"
+
+            # Une modification faite à la main sur le VPS n'est jamais effacée en
+            # silence : elle est mise de côté (git stash list) et affichée ici, pour
+            # être reportée dans le dépôt si elle doit durer.
+            echo "=== 1. Sauvegarde des modifications locales éventuelles ==="
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              git diff
+              git -c user.name=deploy -c user.email=deploy@localhost stash push -m "deploy-backup-$(date +%Y%m%d-%H%M%S)"
+            fi
+
+            echo "=== 2. Mise à jour du dépôt MCP ==="
             git fetch origin main
             git reset --hard origin/main
 
-            echo "=== 2. Validation de la stack VPS ==="
-            cd "$AGENT_DIR"
-            docker compose --env-file deploy/.env -f compose.vps.yml config --quiet
-
-            echo "=== 3. Construction du MCP ==="
-            docker compose --env-file deploy/.env -f compose.vps.yml build --pull batix-mcp
+            # Construire AVANT de basculer : l'ancien MCP sert pendant le build, et un
+            # build raté (set -e) le laisse en service.
+            echo "=== 3. Validation et construction ==="
+            docker network inspect web >/dev/null
+            $C config --quiet
+            $C build --pull mcp
 
             echo "=== 4. Bascule du MCP ==="
-            docker compose --env-file deploy/.env -f compose.vps.yml \
-              up -d --no-deps --force-recreate --wait batix-mcp
+            $C up -d --no-deps --force-recreate --wait mcp
 
             echo "=== 5. Vérification de santé ==="
-            docker compose --env-file deploy/.env -f compose.vps.yml exec -T batix-mcp \
-              node -e "fetch('http://127.0.0.1:3000/health').then(async (response) => { const body = await response.json(); console.log(JSON.stringify(body)); if (!response.ok || body.status !== 'ok' || body.laravel_reachable !== true) process.exit(1); }).catch((error) => { console.error(error); process.exit(1); });"
-            docker compose --env-file deploy/.env -f compose.vps.yml ps batix-mcp
+            $C exec -T mcp node -e "fetch('http://127.0.0.1:3000/health').then(async (response) => { const body = await response.json(); console.log(JSON.stringify(body)); if (!response.ok || body.status !== 'ok' || body.laravel_reachable !== true) process.exit(1); }).catch((error) => { console.error(error); process.exit(1); });"
+            $C ps mcp
+
+            echo "=== 6. Nettoyage des anciennes images ==="
+            docker image prune -f
 
             echo "=== Deploy SUCCESS ==="
+
+      # Vu d'Internet, comme le voit le SaaS (BATIXPRO_MCP_URL) : Traefik route bien
+      # vers le nouveau MCP, et une requête sans token est refusée.
+      - name: Verify public endpoint
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+              https://${{ vars.MCP_PUBLIC_HOST || 'mcp.batixapp.com' }}/mcp || true)
+            echo "Tentative $i : HTTP $code"
+            if [ "$code" = "401" ]; then
+              echo "MCP public OK : requête sans token refusée (401)."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::https://${{ vars.MCP_PUBLIC_HOST || 'mcp.batixapp.com' }}/mcp ne répond pas 401 sans token. L'assistant IA du SaaS est probablement coupé."
+          exit 1

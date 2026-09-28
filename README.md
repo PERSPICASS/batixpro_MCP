@@ -95,40 +95,33 @@ MCP_PORT=3111 docker compose up --build -d
 
 #### Déploiement sur le VPS Batix
 
-Sur le VPS, Laravel est déjà joignable sous `batix_prod_nginx` via le réseau Docker
-externe `web`. Utilisez la surcharge dédiée :
+Sur le VPS, le dépôt est cloné dans `/opt/batix/apps/prod/batixpro_MCP` (avec son
+`.env`) et le MCP tourne avec la surcharge `compose.vps.yaml` :
+
+- Laravel est joint en interne sous `batix_prod_nginx` via le réseau Docker externe `web` ;
+- Traefik publie **uniquement `/mcp`** sur `https://mcp.batixapp.com` (surchargeable
+  avec `MCP_DOMAIN`) ; `/health` reste interne ;
+- l'assistant IA du SaaS appelle cette URL publique (`BATIXPRO_MCP_URL` dans le `.env`
+  de `batix_Saas`), d'où `MCP_ALLOWED_HOSTS=mcp.batixapp.com,localhost,127.0.0.1`.
 
 ```bash
-docker network inspect web
 docker compose -f compose.yaml -f compose.vps.yaml up --build -d
 docker compose -f compose.yaml -f compose.vps.yaml ps
 curl http://127.0.0.1:3000/health
 ```
 
-Le port reste lié à la boucle locale du VPS. Toute exposition publique doit passer par
-le reverse proxy HTTPS ; `MCP_BIND_ADDRESS=0.0.0.0` permet explicitement une exposition
-directe, mais n'est pas la valeur recommandée.
+Toute modification de configuration se fait dans le dépôt, jamais à la main sur le VPS.
 
-En production, renseignez `MCP_ALLOWED_HOSTS` avec les noms réellement utilisés pour
-joindre le MCP (par défaut dans `compose.vps.yaml` : `mcp.batixpro.com,localhost,127.0.0.1`).
-Dans la stack `agent_auto_heberge`, Hermes l'appelle sous `batix-mcp` : ajoutez ce nom.
+Le workflow GitHub Actions `.github/workflows/deploy.yml` déploie à chaque push sur
+`main` (ou manuellement avec `workflow_dispatch`). Réglages attendus dans le dépôt
+GitHub : variables `VPS_HOST` et `VPS_USER`, secret `VPS_SSH_KEY` ; variable
+facultative `MCP_PUBLIC_HOST` si le domaine public change. Sans `VPS_HOST`/`VPS_USER`,
+le job `deploy` est **sauté** (le run reste vert).
 
-Lorsque le MCP est déployé avec la stack `agent_auto_heberge`, utilisez plutôt son
-`compose.vps.yml` et son script `scripts/deploy-vps.sh` : cette stack ne publie aucun
-port, relie directement Hermes au MCP et relie uniquement le MCP au réseau `web`.
-
-Le workflow GitHub Actions `.github/workflows/deploy.yml` automatise ce chemin à chaque
-push sur `main` (ou manuellement avec `workflow_dispatch`). Il attend les réglages
-suivants dans le dépôt GitHub :
-
-- variables `VPS_HOST` et `VPS_USER` ;
-- secret `VPS_SSH_KEY` ;
-- dépôts VPS présents dans `/opt/batix/apps/prod/batixpro_mcp` et
-  `/opt/batix/apps/prod/agent_auto_heberge`.
-
-Avant la bascule, le workflow exécute le typecheck, le build TypeScript et un build
-Docker. Sur le VPS, il ne recrée que `batix-mcp`, attend son healthcheck puis vérifie
-explicitement que l'API Laravel est joignable.
+Déroulé : typecheck, build TypeScript et build Docker chez GitHub ; puis sur le VPS,
+mise de côté des modifications locales éventuelles (`git stash list`), mise à jour
+du dépôt, build, recréation du seul service `mcp`, contrôle de santé (Laravel
+joignable) ; enfin, depuis Internet, `POST /mcp` sans token doit répondre `401`.
 
 Pour suivre les logs et arrêter le service :
 
@@ -144,17 +137,20 @@ Endpoints :
 
 ## Authentification et protections
 
-Le serveur fonctionne **sans session** : chaque requête `POST /mcp` porte son Bearer
-token dans l'en-tête `Authorization`, reçoit un serveur MCP neuf lié à ce token, puis
-tout est libéré. Le token est transféré tel quel à Laravel à chaque appel.
+Chaque connexion MCP porte un Bearer token dans l'en-tête `Authorization`. Le token est
+capturé à l'ouverture de session (`initialize`) et transféré tel quel à Laravel à chaque
+appel. Les sessions sont conservées car le client de l'assistant IA du SaaS
+(`App\Services\Mcp\McpClient`) exige un `mcp-session-id`.
 
 - Sans token → `401`.
-- À l'initialisation, le token est vérifié auprès de Laravel (`GET /api/user`) :
+- À l'`initialize`, le token est vérifié auprès de Laravel (`GET /api/user`) :
   invalide, expiré ou révoqué → `401` immédiat.
+- Chaque requête sur une session doit porter le token qui l'a ouverte → `403` sinon.
+- Session inactive fermée après 30 min (`MCP_SESSION_IDLE_MS`) ; au plus 500 sessions
+  simultanées (`MCP_MAX_SESSIONS`) → `503` au-delà.
 - Corps de requête limité à 1 Mo (`MCP_MAX_BODY_BYTES`) → `413` au-delà.
 - `MCP_ALLOWED_HOSTS` (noms d'hôte séparés par des virgules, port ignoré) : tout autre
   en-tête `Host` sur `/mcp` → `403` (protection DNS rebinding). Vide = désactivé.
-- `GET`/`DELETE /mcp` → `405` : sans session, il n'y a ni flux à rouvrir ni session à fermer.
 - Arrêt propre sur `SIGTERM` : les requêtes en cours se terminent (10 s maximum).
 
 > Note Phase 1 : on réutilise les tokens Sanctum existants (créés par le `super_admin`).
@@ -172,8 +168,8 @@ src/
   tools/
     registry.ts    # helper d'enregistrement des tools de lecture
     product.ts customer.ts sales.ts stock.ts
-    index.ts       # enregistre tous les tools d'une requête
-  server.ts        # serveur HTTP sans session + protections
+    index.ts       # enregistre tous les tools d'une session
+  server.ts        # serveur HTTP, sessions bornées + protections
 ```
 
 ## Vérifier rapidement

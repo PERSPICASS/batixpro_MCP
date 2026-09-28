@@ -2,7 +2,18 @@ services:
   mcp:
     environment:
       LARAVEL_API_URL: "${DOCKER_LARAVEL_API_URL:-http://batix_prod_nginx/api/v1}"
-      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-}"
+      # Le SaaS appelle le MCP par son URL publique (BATIXPRO_MCP_URL) : Traefik
+      # conserve l'en-tête Host, qui vaut donc ce domaine.
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-mcp.batixapp.com,localhost,127.0.0.1}"
+    # Publication HTTPS via Traefik. Seul /mcp est exposé : /health reste interne.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.batix_mcp.rule=Host(`${MCP_DOMAIN:-mcp.batixapp.com}`) && PathPrefix(`/mcp`)"
+      - "traefik.http.routers.batix_mcp.entrypoints=websecure"
+      - "traefik.http.routers.batix_mcp.tls=true"
+      - "traefik.http.routers.batix_mcp.tls.certresolver=le"
+      - "traefik.http.services.batix_mcp.loadbalancer.server.port=3000"
     networks:
       - web
 
