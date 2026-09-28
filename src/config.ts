@@ -24,6 +24,10 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   logLevel: (process.env.LOG_LEVEL ?? "info") as "debug" | "info" | "warn" | "error",
   laravelTimeoutMs: Number(process.env.LARAVEL_TIMEOUT_MS ?? 15000),
+  /** Nombre maximal de sessions MCP ouvertes simultanément. */
+  maxSessions: Number(process.env.MCP_MAX_SESSIONS ?? 500),
+  /** Durée d'inactivité (ms) au-delà de laquelle une session est fermée. */
+  sessionIdleMs: Number(process.env.MCP_SESSION_IDLE_MS ?? 30 * 60 * 1000),
   /** Taille maximale d'un corps de requête MCP (octets). */
   maxBodyBytes: Number(process.env.MCP_MAX_BODY_BYTES ?? 1_048_576),
   /**

@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -10,17 +10,33 @@ import { registerAllTools } from "./tools/index.js";
 import type { Ctx } from "./tools/registry.js";
 
 /**
- * Serveur MCP BATIXPRO — passerelle Streamable HTTP, en mode SANS SESSION.
+ * Serveur MCP BATIXPRO — passerelle Streamable HTTP.
  *
- * Chaque requête POST porte son Bearer token et reçoit un serveur MCP neuf, lié à CE
- * token (C2) puis jeté à la fin de la réponse. La passerelle ne garde rien en mémoire
- * entre deux requêtes : pas de session à détourner ni à accumuler, et un redémarrage
- * ne coupe personne. Le token est transféré verbatim à Laravel, qui reste seul juge
- * du tenant et des permissions.
+ * Cycle de vie (cf. Passe 1 §1.1) : une session s'ouvre sur une requête `initialize`
+ * portant un Bearer token ; les tools sont liés à CE token (C2) ; les requêtes
+ * suivantes réutilisent la session via l'en-tête `mcp-session-id`. La passerelle ne
+ * recalcule aucun contexte tenant — le token est transféré verbatim à Laravel.
  *
- * À l'initialisation, le token est vérifié auprès de Laravel : un token invalide est
- * refusé tout de suite (401) plutôt qu'au premier appel de tool.
+ * Les sessions restent nécessaires : le client de l'assistant IA du SaaS
+ * (App\Services\Mcp\McpClient) exige un mcp-session-id. Elles sont donc bornées :
+ * - le token est vérifié auprès de Laravel avant l'ouverture (401 sinon) ;
+ * - chaque requête sur une session doit porter le MÊME token que son ouverture ;
+ * - une session inactive expire (MCP_SESSION_IDLE_MS) et leur nombre est plafonné
+ *   (MCP_MAX_SESSIONS) : McpClient n'envoie jamais de DELETE, sans cette borne les
+ *   sessions s'accumuleraient jusqu'à épuiser la mémoire.
  */
+
+interface Session {
+  transport: StreamableHTTPServerTransport;
+  tokenHash: Buffer;
+  lastSeen: number;
+}
+
+const sessions = new Map<string, Session>();
+
+function hashToken(token: string): Buffer {
+  return createHash("sha256").update(token).digest();
+}
 
 class PayloadTooLargeError extends Error {}
 
@@ -71,40 +87,20 @@ function hostAllowed(req: IncomingMessage): boolean {
   return config.allowedHosts.includes(hostname ?? "");
 }
 
-async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method !== "POST") {
-    // Sans session, il n'y a ni flux GET à rouvrir ni session à fermer par DELETE.
-    sendJson(
-      res,
-      405,
-      { jsonrpc: "2.0", error: { code: -32000, message: "Méthode non autorisée." }, id: null },
-      { Allow: "POST" },
-    );
+async function openSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  token: string,
+  parsedBody: unknown,
+): Promise<void> {
+  if (sessions.size >= config.maxSessions) {
+    logger.warn("mcp_session_limit_reached", { sessions: sessions.size });
+    jsonRpcError(res, 503, -32000, "Serveur saturé, réessaie dans un instant.");
     return;
-  }
-
-  const token = extractBearer(req);
-  if (!token) {
-    jsonRpcError(res, 401, -32001, "Token d'authentification manquant. Fournis un Bearer token.");
-    return;
-  }
-
-  let parsed: unknown;
-  try {
-    const raw = await readBody(req);
-    parsed = raw ? safeJson(raw) : undefined;
-  } catch (error) {
-    if (error instanceof PayloadTooLargeError) {
-      res.setHeader("Connection", "close");
-      jsonRpcError(res, 413, -32000, "Requête trop volumineuse.");
-      return;
-    }
-    throw error;
   }
 
   const requestId = randomUUID();
-
-  if (isInitializeRequest(parsed) && !(await isTokenValid(token, requestId))) {
+  if (!(await isTokenValid(token, requestId))) {
     logger.warn("mcp_token_rejected", { request_id: requestId });
     jsonRpcError(res, 401, -32001, "Token invalide, expiré ou révoqué.");
     return;
@@ -114,15 +110,104 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
   const server = new McpServer({ name: "batixpro-mcp", version: "0.1.0" });
   registerAllTools(server, ctx);
 
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on("close", () => {
-    void transport.close();
-    void server.close();
+  const tokenHash = hashToken(token);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+    onsessioninitialized: (sessionId) => {
+      sessions.set(sessionId, { transport, tokenHash, lastSeen: Date.now() });
+      logger.info("mcp_session_opened", { session_id: sessionId });
+    },
   });
 
+  transport.onclose = () => {
+    const sid = transport.sessionId;
+    if (sid && sessions.delete(sid)) {
+      logger.info("mcp_session_closed", { session_id: sid });
+    }
+    void server.close();
+  };
+
   await server.connect(transport);
-  await transport.handleRequest(req, res, parsed);
+  await transport.handleRequest(req, res, parsedBody);
 }
+
+async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const token = extractBearer(req);
+  if (!token) {
+    jsonRpcError(res, 401, -32001, "Token d'authentification manquant. Fournis un Bearer token.");
+    return;
+  }
+
+  const sessionId = req.headers["mcp-session-id"];
+  const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
+
+  // Requêtes sur une session établie (POST suivant, GET stream, DELETE) : même token
+  // exigé qu'à l'ouverture, sinon un mcp-session-id intercepté suffirait à agir.
+  if (existing) {
+    if (!timingSafeEqual(existing.tokenHash, hashToken(token))) {
+      logger.warn("mcp_session_token_mismatch", { session_id: sessionId });
+      jsonRpcError(res, 403, -32001, "Ce token ne correspond pas à la session.");
+      return;
+    }
+    existing.lastSeen = Date.now();
+
+    if (req.method === "POST") {
+      const parsed = await readJsonBody(req, res);
+      if (parsed === BODY_REJECTED) return;
+      await existing.transport.handleRequest(req, res, parsed);
+      return;
+    }
+    await existing.transport.handleRequest(req, res);
+    return;
+  }
+
+  if (req.method === "POST") {
+    // Nouvelle session : la première requête doit être `initialize`.
+    const parsed = await readJsonBody(req, res);
+    if (parsed === BODY_REJECTED) return;
+
+    if (isInitializeRequest(parsed)) {
+      await openSession(req, res, token, parsed);
+      return;
+    }
+
+    jsonRpcError(res, 400, -32000, "Session inconnue ou expirée. Ré-initialise la connexion.");
+    return;
+  }
+
+  // GET/DELETE sans session valide.
+  jsonRpcError(res, 400, -32000, "Session MCP requise.");
+}
+
+const BODY_REJECTED = Symbol("body_rejected");
+
+/** Lit et décode le corps ; répond 413 et renvoie BODY_REJECTED s'il est trop gros. */
+async function readJsonBody(req: IncomingMessage, res: ServerResponse): Promise<unknown> {
+  try {
+    const raw = await readBody(req);
+    return raw ? safeJson(raw) : undefined;
+  } catch (error) {
+    if (error instanceof PayloadTooLargeError) {
+      res.setHeader("Connection", "close");
+      jsonRpcError(res, 413, -32000, "Requête trop volumineuse.");
+      return BODY_REJECTED;
+    }
+    throw error;
+  }
+}
+
+/** Ferme les sessions inactives depuis plus de MCP_SESSION_IDLE_MS. */
+const sweeper = setInterval(() => {
+  const limit = Date.now() - config.sessionIdleMs;
+  for (const [sid, session] of sessions) {
+    if (session.lastSeen < limit) {
+      logger.info("mcp_session_expired", { session_id: sid });
+      void session.transport.close();
+      sessions.delete(sid);
+    }
+  }
+}, 60_000);
+sweeper.unref();
 
 async function handleHealth(res: ServerResponse): Promise<void> {
   // Santé du process + capacité à joindre l'API Laravel (endpoint /up de Laravel).
