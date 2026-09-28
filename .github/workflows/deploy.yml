@@ -42,16 +42,31 @@ jobs:
 
   deploy:
     needs: verify
-    if: ${{ vars.VPS_HOST != '' && vars.VPS_USER != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    # VPS_HOST / VPS_USER sont lus dans l'onglet Variables, ou à défaut dans Secrets.
+    env:
+      VPS_HOST: ${{ vars.VPS_HOST || secrets.VPS_HOST }}
+      VPS_USER: ${{ vars.VPS_USER || secrets.VPS_USER }}
+      HAS_SSH_KEY: ${{ secrets.VPS_SSH_KEY != '' }}
+
     steps:
+      # Un réglage manquant doit faire échouer le run avec un message clair, pas
+      # sauter la livraison en laissant un run vert.
+      - name: Check deploy settings
+        run: |
+          missing=0
+          [ -n "$VPS_HOST" ] || { echo "::error::VPS_HOST manquant (Settings > Secrets and variables > Actions > Variables)."; missing=1; }
+          [ -n "$VPS_USER" ] || { echo "::error::VPS_USER manquant (Settings > Secrets and variables > Actions > Variables)."; missing=1; }
+          [ "$HAS_SSH_KEY" = "true" ] || { echo "::error::VPS_SSH_KEY manquant (Settings > Secrets and variables > Actions > Secrets)."; missing=1; }
+          exit $missing
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ vars.VPS_HOST }}
-          username: ${{ vars.VPS_USER }}
+          host: ${{ env.VPS_HOST }}
+          username: ${{ env.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           command_timeout: 15m

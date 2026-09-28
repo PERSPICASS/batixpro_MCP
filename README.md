@@ -115,8 +115,8 @@ Toute modification de configuration se fait dans le dépôt, jamais à la main s
 Le workflow GitHub Actions `.github/workflows/deploy.yml` déploie à chaque push sur
 `main` (ou manuellement avec `workflow_dispatch`). Réglages attendus dans le dépôt
 GitHub : variables `VPS_HOST` et `VPS_USER`, secret `VPS_SSH_KEY` ; variable
-facultative `MCP_PUBLIC_HOST` si le domaine public change. Sans `VPS_HOST`/`VPS_USER`,
-le job `deploy` est **sauté** (le run reste vert).
+facultative `MCP_PUBLIC_HOST` si le domaine public change. Un réglage manquant fait
+échouer le job `deploy` avec un message qui le nomme.
 
 Déroulé : typecheck, build TypeScript et build Docker chez GitHub ; puis sur le VPS,
 mise de côté des modifications locales éventuelles (`git stash list`), mise à jour
