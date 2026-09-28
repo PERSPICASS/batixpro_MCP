@@ -24,4 +24,14 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   logLevel: (process.env.LOG_LEVEL ?? "info") as "debug" | "info" | "warn" | "error",
   laravelTimeoutMs: Number(process.env.LARAVEL_TIMEOUT_MS ?? 15000),
+  /** Taille maximale d'un corps de requête MCP (octets). */
+  maxBodyBytes: Number(process.env.MCP_MAX_BODY_BYTES ?? 1_048_576),
+  /**
+   * Noms d'hôte acceptés dans l'en-tête Host (protection DNS rebinding), séparés par
+   * des virgules, port ignoré. Vide = contrôle désactivé (développement local).
+   */
+  allowedHosts: (process.env.MCP_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter((host) => host !== ""),
 } as const;

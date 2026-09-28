@@ -108,6 +108,37 @@ export class LaravelClient {
   }
 }
 
+/**
+ * Vérifie un token auprès de Laravel (`GET /api/user`) avant d'ouvrir une connexion
+ * MCP : sans ce contrôle, n'importe quelle chaîne passait l'initialisation et le
+ * refus n'arrivait qu'au premier appel de tool.
+ *
+ * `true`/`false` selon la réponse de Laravel ; une panne réseau lève une
+ * `LaravelError` 502 — une API injoignable ne doit pas se déguiser en token invalide.
+ */
+export async function isTokenValid(token: string, requestId: string): Promise<boolean> {
+  const url = config.laravelApiUrl.replace(/\/v1$/, "") + "/user";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.laravelTimeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "X-Request-Id": requestId },
+      signal: controller.signal,
+    });
+    await response.body?.cancel();
+    return response.ok;
+  } catch (error) {
+    logger.error("laravel_token_check_failed", {
+      request_id: requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw new LaravelError(502, "upstream_unreachable", "API injoignable.");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function safeJson(text: string): unknown {
   try {
     return JSON.parse(text);

@@ -2,6 +2,7 @@ services:
   mcp:
     environment:
       LARAVEL_API_URL: "${DOCKER_LARAVEL_API_URL:-http://batix_prod_nginx/api/v1}"
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-mcp.batixpro.com,localhost,127.0.0.1}"
     networks:
       - web
 

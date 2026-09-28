@@ -109,6 +109,10 @@ Le port reste lié à la boucle locale du VPS. Toute exposition publique doit pa
 le reverse proxy HTTPS ; `MCP_BIND_ADDRESS=0.0.0.0` permet explicitement une exposition
 directe, mais n'est pas la valeur recommandée.
 
+En production, renseignez `MCP_ALLOWED_HOSTS` avec les noms réellement utilisés pour
+joindre le MCP (par défaut dans `compose.vps.yaml` : `mcp.batixpro.com,localhost,127.0.0.1`).
+Dans la stack `agent_auto_heberge`, Hermes l'appelle sous `batix-mcp` : ajoutez ce nom.
+
 Lorsque le MCP est déployé avec la stack `agent_auto_heberge`, utilisez plutôt son
 `compose.vps.yml` et son script `scripts/deploy-vps.sh` : cette stack ne publie aucun
 port, relie directement Hermes au MCP et relie uniquement le MCP au réseau `web`.
@@ -138,11 +142,20 @@ Endpoints :
 - `POST /mcp` — endpoint MCP (Streamable HTTP). Requiert `Authorization: Bearer <token>`.
 - `GET /health` — santé du process + joignabilité de l'API Laravel.
 
-## Authentification
+## Authentification et protections
 
-Chaque connexion MCP porte un Bearer token dans l'en-tête `Authorization`. Le token est
-capturé à l'ouverture de session (`initialize`) et transféré tel quel à Laravel à chaque
-appel. Sans token → `401`. Token expiré/révoqué → Laravel répond `401`, la session tombe.
+Le serveur fonctionne **sans session** : chaque requête `POST /mcp` porte son Bearer
+token dans l'en-tête `Authorization`, reçoit un serveur MCP neuf lié à ce token, puis
+tout est libéré. Le token est transféré tel quel à Laravel à chaque appel.
+
+- Sans token → `401`.
+- À l'initialisation, le token est vérifié auprès de Laravel (`GET /api/user`) :
+  invalide, expiré ou révoqué → `401` immédiat.
+- Corps de requête limité à 1 Mo (`MCP_MAX_BODY_BYTES`) → `413` au-delà.
+- `MCP_ALLOWED_HOSTS` (noms d'hôte séparés par des virgules, port ignoré) : tout autre
+  en-tête `Host` sur `/mcp` → `403` (protection DNS rebinding). Vide = désactivé.
+- `GET`/`DELETE /mcp` → `405` : sans session, il n'y a ni flux à rouvrir ni session à fermer.
+- Arrêt propre sur `SIGTERM` : les requêtes en cours se terminent (10 s maximum).
 
 > Note Phase 1 : on réutilise les tokens Sanctum existants (créés par le `super_admin`).
 > Les **tokens MCP par utilisateur** (abilities dérivées des permissions, exclusion du
@@ -159,8 +172,8 @@ src/
   tools/
     registry.ts    # helper d'enregistrement des tools de lecture
     product.ts customer.ts sales.ts stock.ts
-    index.ts       # enregistre tous les tools d'une session
-  server.ts        # serveur HTTP + gestion de session MCP
+    index.ts       # enregistre tous les tools d'une requête
+  server.ts        # serveur HTTP sans session + protections
 ```
 
 ## Vérifier rapidement
@@ -171,7 +184,7 @@ erreur propre quand l'API est injoignable) :
 ```bash
 npm run build && PORT=3111 node dist/server.js &
 curl -s http://localhost:3111/health
-# → {"status":"ok","sessions":0,"laravel_reachable":false}
+# → {"status":"ok","laravel_reachable":false}
 ```
 
 Test de bout en bout avec un vrai token : pointer `LARAVEL_API_URL` sur l'API en marche,

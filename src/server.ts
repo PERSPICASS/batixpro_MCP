@@ -5,24 +5,24 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import { LaravelClient } from "./laravel.js";
+import { LaravelClient, isTokenValid } from "./laravel.js";
 import { registerAllTools } from "./tools/index.js";
 import type { Ctx } from "./tools/registry.js";
 
 /**
- * Serveur MCP BATIXPRO — passerelle Streamable HTTP.
+ * Serveur MCP BATIXPRO — passerelle Streamable HTTP, en mode SANS SESSION.
  *
- * Cycle de vie (cf. Passe 1 §1.1) : une session s'ouvre sur une requête `initialize`
- * portant un Bearer token ; les tools sont liés à CE token (C2) ; les requêtes
- * suivantes réutilisent la session via l'en-tête `mcp-session-id`. La passerelle ne
- * recalcule aucun contexte tenant — le token est transféré verbatim à Laravel.
+ * Chaque requête POST porte son Bearer token et reçoit un serveur MCP neuf, lié à CE
+ * token (C2) puis jeté à la fin de la réponse. La passerelle ne garde rien en mémoire
+ * entre deux requêtes : pas de session à détourner ni à accumuler, et un redémarrage
+ * ne coupe personne. Le token est transféré verbatim à Laravel, qui reste seul juge
+ * du tenant et des permissions.
+ *
+ * À l'initialisation, le token est vérifié auprès de Laravel : un token invalide est
+ * refusé tout de suite (401) plutôt qu'au premier appel de tool.
  */
 
-interface Session {
-  transport: StreamableHTTPServerTransport;
-}
-
-const sessions = new Map<string, Session>();
+class PayloadTooLargeError extends Error {}
 
 function extractBearer(req: IncomingMessage): string | null {
   const header = req.headers["authorization"];
@@ -31,8 +31,8 @@ function extractBearer(req: IncomingMessage): string | null {
   return match ? (match[1] ?? "").trim() || null : null;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "Content-Type": "application/json", ...headers });
   res.end(JSON.stringify(body));
 }
 
@@ -40,74 +40,88 @@ function jsonRpcError(res: ServerResponse, status: number, code: number, message
   sendJson(res, status, { jsonrpc: "2.0", error: { code, message }, id: null });
 }
 
+/** Lit le corps en refusant tout ce qui dépasse `config.maxBodyBytes`. */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk) => chunks.push(chunk as Buffer));
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > config.maxBodyBytes) {
+        req.pause();
+        reject(new PayloadTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
 
-async function openSession(req: IncomingMessage, res: ServerResponse, parsedBody: unknown): Promise<void> {
+/**
+ * Protection DNS rebinding : l'en-tête Host doit viser un nom attendu. Le port est
+ * ignoré pour qu'un même réglage couvre l'accès public (mcp.batixpro.com) et l'accès
+ * interne entre conteneurs (batix-mcp:3000).
+ */
+function hostAllowed(req: IncomingMessage): boolean {
+  if (config.allowedHosts.length === 0) return true;
+  const host = (req.headers.host ?? "").toLowerCase();
+  const hostname = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
+  return config.allowedHosts.includes(hostname ?? "");
+}
+
+async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") {
+    // Sans session, il n'y a ni flux GET à rouvrir ni session à fermer par DELETE.
+    sendJson(
+      res,
+      405,
+      { jsonrpc: "2.0", error: { code: -32000, message: "Méthode non autorisée." }, id: null },
+      { Allow: "POST" },
+    );
+    return;
+  }
+
   const token = extractBearer(req);
   if (!token) {
     jsonRpcError(res, 401, -32001, "Token d'authentification manquant. Fournis un Bearer token.");
     return;
   }
 
-  const requestId = randomUUID();
-  const ctx: Ctx = { laravel: new LaravelClient(token, requestId), requestId };
+  let parsed: unknown;
+  try {
+    const raw = await readBody(req);
+    parsed = raw ? safeJson(raw) : undefined;
+  } catch (error) {
+    if (error instanceof PayloadTooLargeError) {
+      res.setHeader("Connection", "close");
+      jsonRpcError(res, 413, -32000, "Requête trop volumineuse.");
+      return;
+    }
+    throw error;
+  }
 
+  const requestId = randomUUID();
+
+  if (isInitializeRequest(parsed) && !(await isTokenValid(token, requestId))) {
+    logger.warn("mcp_token_rejected", { request_id: requestId });
+    jsonRpcError(res, 401, -32001, "Token invalide, expiré ou révoqué.");
+    return;
+  }
+
+  const ctx: Ctx = { laravel: new LaravelClient(token, requestId), requestId };
   const server = new McpServer({ name: "batixpro-mcp", version: "0.1.0" });
   registerAllTools(server, ctx);
 
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-    onsessioninitialized: (sessionId) => {
-      sessions.set(sessionId, { transport });
-      logger.info("mcp_session_opened", { session_id: sessionId });
-    },
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on("close", () => {
+    void transport.close();
+    void server.close();
   });
 
-  transport.onclose = () => {
-    const sid = transport.sessionId;
-    if (sid && sessions.delete(sid)) {
-      logger.info("mcp_session_closed", { session_id: sid });
-    }
-    void server.close();
-  };
-
   await server.connect(transport);
-  await transport.handleRequest(req, res, parsedBody);
-}
-
-async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const sessionId = req.headers["mcp-session-id"];
-  const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
-
-  // Requêtes sur une session établie (POST suivant, GET stream, DELETE) : on route.
-  if (existing) {
-    await existing.transport.handleRequest(req, res);
-    return;
-  }
-
-  if (req.method === "POST") {
-    // Nouvelle session : la première requête doit être `initialize`.
-    const raw = await readBody(req);
-    const parsed = raw ? safeJson(raw) : undefined;
-
-    if (isInitializeRequest(parsed)) {
-      await openSession(req, res, parsed);
-      return;
-    }
-
-    jsonRpcError(res, 400, -32000, "Session inconnue ou expirée. Ré-initialise la connexion.");
-    return;
-  }
-
-  // GET/DELETE sans session valide.
-  jsonRpcError(res, 400, -32000, "Session MCP requise.");
+  await transport.handleRequest(req, res, parsed);
 }
 
 async function handleHealth(res: ServerResponse): Promise<void> {
@@ -123,7 +137,7 @@ async function handleHealth(res: ServerResponse): Promise<void> {
   } catch {
     laravelReachable = false;
   }
-  sendJson(res, 200, { status: "ok", sessions: sessions.size, laravel_reachable: laravelReachable });
+  sendJson(res, 200, { status: "ok", laravel_reachable: laravelReachable });
 }
 
 function safeJson(text: string): unknown {
@@ -135,13 +149,18 @@ function safeJson(text: string): unknown {
 }
 
 const httpServer = createServer((req, res) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  const url = new URL(req.url ?? "/", "http://localhost");
 
   if (url.pathname === "/health") {
     void handleHealth(res);
     return;
   }
   if (url.pathname === "/mcp") {
+    if (!hostAllowed(req)) {
+      logger.warn("mcp_host_rejected", { host: req.headers.host ?? null });
+      jsonRpcError(res, 403, -32000, "Hôte non autorisé.");
+      return;
+    }
     void handleMcp(req, res).catch((error) => {
       logger.error("mcp_handler_error", { error: error instanceof Error ? error.message : String(error) });
       if (!res.headersSent) jsonRpcError(res, 500, -32603, "Erreur interne du serveur MCP.");
@@ -152,5 +171,25 @@ const httpServer = createServer((req, res) => {
 });
 
 httpServer.listen(config.port, () => {
-  logger.info("mcp_server_started", { port: config.port, laravel_api_url: config.laravelApiUrl, endpoint: "/mcp" });
+  logger.info("mcp_server_started", {
+    port: config.port,
+    laravel_api_url: config.laravelApiUrl,
+    endpoint: "/mcp",
+    host_check: config.allowedHosts.length > 0 ? config.allowedHosts : "disabled",
+  });
 });
+
+/**
+ * Arrêt propre : sur SIGTERM (docker stop, déploiement), on cesse d'accepter de
+ * nouvelles connexions et on laisse finir les requêtes en cours, avec un plafond de
+ * 10 s pour ne pas bloquer la bascule.
+ */
+function shutdown(signal: string): void {
+  logger.info("mcp_server_stopping", { signal });
+  httpServer.close(() => process.exit(0));
+  httpServer.closeIdleConnections();
+  setTimeout(() => process.exit(0), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
